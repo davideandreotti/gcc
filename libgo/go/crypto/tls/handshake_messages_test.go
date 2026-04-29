@@ -147,11 +147,18 @@ func (*clientHelloMsg) Generate(rand *rand.Rand, size int) reflect.Value {
 		}
 	}
 	if rand.Intn(10) > 5 {
-		m.supportedSignatureAlgorithms = supportedSignatureAlgorithms
+		m.supportedSignatureAlgorithms = defaultSupportedSignatureAlgorithms //DelegatedCredentials
 	}
 	if rand.Intn(10) > 5 {
-		m.supportedSignatureAlgorithmsCert = supportedSignatureAlgorithms
+		m.supportedSignatureAlgorithmsCert = defaultSupportedSignatureAlgorithms //DelegatedCredentials
 	}
+	// DelegatedCredentials
+	if rand.Intn(10) > 5 {
+		m.delegatedCredentialSupported = true
+		m.supportedSignatureAlgorithmsDC = supportedSignatureAlgorithmsDC
+	}
+	// DelegatedCredentials end
+
 	for i := 0; i < rand.Intn(5); i++ {
 		m.alpnProtocols = append(m.alpnProtocols, randomString(rand.Intn(20)+1, rand))
 	}
@@ -368,11 +375,18 @@ func (*certificateRequestMsgTLS13) Generate(rand *rand.Rand, size int) reflect.V
 	if rand.Intn(10) > 5 {
 		m.scts = true
 	}
+	// DelegatedCredentials
 	if rand.Intn(10) > 5 {
-		m.supportedSignatureAlgorithms = supportedSignatureAlgorithms
+		m.supportDelegatedCredential = true
+		m.supportedSignatureAlgorithmsDC = supportedSignatureAlgorithmsDC
+	}
+	// DelegatedCredentials end
+
+	if rand.Intn(10) > 5 {
+		m.supportedSignatureAlgorithms = defaultSupportedSignatureAlgorithms // DelegatedCredentials
 	}
 	if rand.Intn(10) > 5 {
-		m.supportedSignatureAlgorithmsCert = supportedSignatureAlgorithms
+		m.supportedSignatureAlgorithmsCert = defaultSupportedSignatureAlgorithms // DelegatedCredentials
 	}
 	if rand.Intn(10) > 5 {
 		m.certificateAuthorities = make([][]byte, 3)
@@ -393,6 +407,13 @@ func (*certificateMsgTLS13) Generate(rand *rand.Rand, size int) reflect.Value {
 		m.ocspStapling = true
 		m.certificate.OCSPStaple = randomBytes(rand.Intn(100)+1, rand)
 	}
+	// DelegatedCredentials
+	if rand.Intn(10) > 5 {
+		m.delegatedCredential = true
+		m.certificate.DelegatedCredential = randomBytes(rand.Intn(100)+1, rand)
+	}
+	// DelegatedCredentials end
+
 	if rand.Intn(10) > 5 {
 		m.scts = true
 		for i := 0; i < rand.Intn(2)+1; i++ {

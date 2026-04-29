@@ -614,8 +614,7 @@ var nameConstraintsTests = []nameConstraintsTest{
 		},
 	},
 
-	// #30: without SANs, a certificate with a CN is still accepted in a
-	// constrained chain, since we ignore the CN in VerifyHostname.
+	// #30: without SANs, a certificate with a CN is rejected in a constrained chain.
 	{
 		roots: []constraintsSpec{
 			{
@@ -631,6 +630,7 @@ var nameConstraintsTests = []nameConstraintsTest{
 			sans: []string{},
 			cn:   "foo.com",
 		},
+		expectedError: "leaf doesn't have a SAN extension",
 	},
 
 	// #31: IPv6 addresses work in constraints: roots can permit them as
@@ -1279,8 +1279,8 @@ var nameConstraintsTests = []nameConstraintsTest{
 		expectedError: "incompatible key usage",
 	},
 
-	// #67: SGC key usages used to permit serverAuth and clientAuth,
-	// but don't anymore.
+	// #67: in order to support COMODO chains, SGC key usages permit
+	// serverAuth and clientAuth.
 	{
 		roots: []constraintsSpec{
 			{},
@@ -1296,11 +1296,10 @@ var nameConstraintsTests = []nameConstraintsTest{
 			sans: []string{"dns:example.com"},
 			ekus: []string{"serverAuth", "clientAuth"},
 		},
-		expectedError: "incompatible key usage",
 	},
 
-	// #68: SGC key usages used to permit serverAuth and clientAuth,
-	// but don't anymore.
+	// #68: in order to support COMODO chains, SGC key usages permit
+	// serverAuth and clientAuth.
 	{
 		roots: make([]constraintsSpec, 1),
 		intermediates: [][]constraintsSpec{
@@ -1314,7 +1313,6 @@ var nameConstraintsTests = []nameConstraintsTest{
 			sans: []string{"dns:example.com"},
 			ekus: []string{"serverAuth", "clientAuth"},
 		},
-		expectedError: "incompatible key usage",
 	},
 
 	// #69: an empty DNS constraint should allow anything.
@@ -1439,8 +1437,7 @@ var nameConstraintsTests = []nameConstraintsTest{
 		expectedError: "incompatible key usage",
 	},
 
-	// #76: MSSGC in a leaf used to match a request for serverAuth, but doesn't
-	// anymore.
+	// #76: However, MSSGC in a leaf should match a request for serverAuth.
 	{
 		roots: make([]constraintsSpec, 1),
 		intermediates: [][]constraintsSpec{
@@ -1453,7 +1450,6 @@ var nameConstraintsTests = []nameConstraintsTest{
 			ekus: []string{"msSGC"},
 		},
 		requestedEKUs: []ExtKeyUsage{ExtKeyUsageServerAuth},
-		expectedError: "incompatible key usage",
 	},
 
 	// An invalid DNS SAN should be detected only at validation time so
@@ -1598,6 +1594,26 @@ var nameConstraintsTests = []nameConstraintsTest{
 			sans: []string{"dns:foo.com"},
 			cn:   "foo.bar",
 		},
+	},
+
+	// #85: without SANs, a certificate with a valid CN is accepted in a
+	// constrained chain if x509ignoreCN is set.
+	{
+		roots: []constraintsSpec{
+			{
+				ok: []string{"dns:foo.com", "dns:.foo.com"},
+			},
+		},
+		intermediates: [][]constraintsSpec{
+			{
+				{},
+			},
+		},
+		leaf: leafSpec{
+			sans: []string{},
+			cn:   "foo.com",
+		},
+		ignoreCN: true,
 	},
 }
 
@@ -1849,8 +1865,12 @@ func parseEKUs(ekuStrs []string) (ekus []ExtKeyUsage, unknowns []asn1.ObjectIden
 }
 
 func TestConstraintCases(t *testing.T) {
+	defer func(savedIgnoreCN bool) {
+		ignoreCN = savedIgnoreCN
+	}(ignoreCN)
+
 	privateKeys := sync.Pool{
-		New: func() any {
+		New: func() interface{} {
 			priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 			if err != nil {
 				panic(err)
@@ -1940,6 +1960,7 @@ func TestConstraintCases(t *testing.T) {
 			}
 		}
 
+		ignoreCN = test.ignoreCN
 		verifyOpts := VerifyOptions{
 			Roots:         rootPool,
 			Intermediates: intermediatePool,
@@ -1978,6 +1999,7 @@ func TestConstraintCases(t *testing.T) {
 		for _, key := range keys {
 			privateKeys.Put(key)
 		}
+		keys = keys[:0]
 	}
 }
 

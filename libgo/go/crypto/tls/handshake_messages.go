@@ -81,17 +81,21 @@ type clientHelloMsg struct {
 	sessionTicket                    []uint8
 	supportedSignatureAlgorithms     []SignatureScheme
 	supportedSignatureAlgorithmsCert []SignatureScheme
-	secureRenegotiationSupported     bool
-	secureRenegotiation              []byte
-	alpnProtocols                    []string
-	scts                             bool
-	supportedVersions                []uint16
-	cookie                           []byte
-	keyShares                        []keyShare
-	earlyData                        bool
-	pskModes                         []uint8
-	pskIdentities                    []pskIdentity
-	pskBinders                       [][]byte
+	supportedSignatureAlgorithmsDC   []SignatureScheme // DelegatedCredentials
+
+	secureRenegotiationSupported bool
+	secureRenegotiation          []byte
+	delegatedCredentialSupported bool // DelegatedCredentials
+
+	alpnProtocols     []string
+	scts              bool
+	supportedVersions []uint16
+	cookie            []byte
+	keyShares         []keyShare
+	earlyData         bool
+	pskModes          []uint8
+	pskIdentities     []pskIdentity
+	pskBinders        [][]byte
 }
 
 func (m *clientHelloMsg) marshal() []byte {
@@ -200,6 +204,23 @@ func (m *clientHelloMsg) marshal() []byte {
 					})
 				})
 			}
+
+			// DelegatedCredentials
+			if m.delegatedCredentialSupported {
+				if len(m.supportedSignatureAlgorithmsDC) > 0 {
+					// Draft: https://tools.ietf.org/html/draft-ietf-tls-subcerts-10
+					b.AddUint16(extensionDelegatedCredentials)
+					b.AddUint16LengthPrefixed(func(b *cryptobyte.Builder) {
+						b.AddUint16LengthPrefixed(func(b *cryptobyte.Builder) {
+							for _, sigAlgo := range m.supportedSignatureAlgorithmsDC {
+								b.AddUint16(uint16(sigAlgo))
+							}
+						})
+					})
+				}
+			}
+			// DelegatedCredentials end
+
 			if len(m.alpnProtocols) > 0 {
 				// RFC 7301, Section 3.1
 				b.AddUint16(extensionALPN)
@@ -522,6 +543,22 @@ func (m *clientHelloMsg) unmarshal(data []byte) bool {
 				len(m.cookie) == 0 {
 				return false
 			}
+		// DelegatedCredentials
+		case extensionDelegatedCredentials:
+			var sigAndAlgs cryptobyte.String
+			if !extData.ReadUint16LengthPrefixed(&sigAndAlgs) || sigAndAlgs.Empty() {
+				return false
+			}
+			for !sigAndAlgs.Empty() {
+				var sigAndAlg uint16
+				if !sigAndAlgs.ReadUint16(&sigAndAlg) {
+					return false
+				}
+				m.supportedSignatureAlgorithmsDC = append(
+					m.supportedSignatureAlgorithmsDC, SignatureScheme(sigAndAlg))
+			}
+			m.delegatedCredentialSupported = true
+		// DelegatedCredentials end
 		case extensionKeyShare:
 			// RFC 8446, Section 4.2.8
 			var clientShares cryptobyte.String
@@ -1050,10 +1087,14 @@ func (m *newSessionTicketMsgTLS13) unmarshal(data []byte) bool {
 }
 
 type certificateRequestMsgTLS13 struct {
-	raw                              []byte
-	ocspStapling                     bool
-	scts                             bool
-	supportedSignatureAlgorithms     []SignatureScheme
+	raw                        []byte
+	ocspStapling               bool
+	scts                       bool
+	supportDelegatedCredential bool // DelegatedCredentials
+
+	supportedSignatureAlgorithms   []SignatureScheme
+	supportedSignatureAlgorithmsDC []SignatureScheme // DelegatedCredentials
+
 	supportedSignatureAlgorithmsCert []SignatureScheme
 	certificateAuthorities           [][]byte
 }
@@ -1084,6 +1125,22 @@ func (m *certificateRequestMsgTLS13) marshal() []byte {
 				b.AddUint16(extensionSCT)
 				b.AddUint16(0) // empty extension_data
 			}
+			// DelegatedCredentials
+			if m.supportDelegatedCredential {
+				if len(m.supportedSignatureAlgorithmsDC) > 0 {
+					// Draft: https://tools.ietf.org/html/draft-ietf-tls-subcerts-10
+					b.AddUint16(extensionDelegatedCredentials)
+					b.AddUint16LengthPrefixed(func(b *cryptobyte.Builder) {
+						b.AddUint16LengthPrefixed(func(b *cryptobyte.Builder) {
+							for _, sigAlgo := range m.supportedSignatureAlgorithmsDC {
+								b.AddUint16(uint16(sigAlgo))
+							}
+						})
+					})
+				}
+			}
+			// DelegatedCredentials end
+
 			if len(m.supportedSignatureAlgorithms) > 0 {
 				b.AddUint16(extensionSignatureAlgorithms)
 				b.AddUint16LengthPrefixed(func(b *cryptobyte.Builder) {
@@ -1148,6 +1205,22 @@ func (m *certificateRequestMsgTLS13) unmarshal(data []byte) bool {
 			m.ocspStapling = true
 		case extensionSCT:
 			m.scts = true
+		// DelegatedCredentials
+		case extensionDelegatedCredentials:
+			var sigAndAlgs cryptobyte.String
+			if !extData.ReadUint16LengthPrefixed(&sigAndAlgs) || sigAndAlgs.Empty() {
+				return false
+			}
+			for !sigAndAlgs.Empty() {
+				var sigAndAlg uint16
+				if !sigAndAlgs.ReadUint16(&sigAndAlg) {
+					return false
+				}
+				m.supportedSignatureAlgorithmsDC = append(
+					m.supportedSignatureAlgorithmsDC, SignatureScheme(sigAndAlg))
+			}
+			m.supportDelegatedCredential = true
+		// DelegatedCredentials end
 		case extensionSignatureAlgorithms:
 			var sigAndAlgs cryptobyte.String
 			if !extData.ReadUint16LengthPrefixed(&sigAndAlgs) || sigAndAlgs.Empty() {
@@ -1277,10 +1350,11 @@ func (m *certificateMsg) unmarshal(data []byte) bool {
 }
 
 type certificateMsgTLS13 struct {
-	raw          []byte
-	certificate  Certificate
-	ocspStapling bool
-	scts         bool
+	raw                 []byte
+	certificate         Certificate
+	ocspStapling        bool
+	scts                bool
+	delegatedCredential bool // DelegatedCredentials
 }
 
 func (m *certificateMsgTLS13) marshal() []byte {
@@ -1300,6 +1374,12 @@ func (m *certificateMsgTLS13) marshal() []byte {
 		if !m.scts {
 			certificate.SignedCertificateTimestamps = nil
 		}
+		// DelegatedCredentials
+		if !m.delegatedCredential {
+			certificate.DelegatedCredential = nil
+		}
+		// DelegatedCredentials end
+
 		marshalCertificate(b, certificate)
 	})
 
@@ -1339,6 +1419,14 @@ func marshalCertificate(b *cryptobyte.Builder, certificate Certificate) {
 						})
 					})
 				}
+				// DelegatedCredentials
+				if certificate.DelegatedCredential != nil {
+					b.AddUint16(extensionDelegatedCredentials)
+					b.AddUint16LengthPrefixed(func(b *cryptobyte.Builder) {
+						b.AddBytes(certificate.DelegatedCredential)
+					})
+				}
+				// DelegatedCredentials end
 			})
 		}
 	})
@@ -1358,6 +1446,7 @@ func (m *certificateMsgTLS13) unmarshal(data []byte) bool {
 
 	m.scts = m.certificate.SignedCertificateTimestamps != nil
 	m.ocspStapling = m.certificate.OCSPStaple != nil
+	m.delegatedCredential = m.certificate.DelegatedCredential != nil // DelegatedCredentials
 
 	return true
 }
@@ -1409,6 +1498,16 @@ func unmarshalCertificate(s *cryptobyte.String, certificate *Certificate) bool {
 					certificate.SignedCertificateTimestamps = append(
 						certificate.SignedCertificateTimestamps, sct)
 				}
+			// DelegatedCredentials
+			case extensionDelegatedCredentials:
+				if !extData.ReadBytes(&certificate.DelegatedCredential, len(extData)) {
+					return false
+				}
+				if len(certificate.DelegatedCredential) == 0 {
+					return false
+				}
+			// DelegatedCredentials end
+
 			default:
 				// Ignore unknown extensions.
 				continue

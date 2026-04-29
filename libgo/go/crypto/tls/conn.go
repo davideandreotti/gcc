@@ -32,6 +32,7 @@ type Conn struct {
 
 	// handshakeStatus is 1 if the connection is currently transferring
 	// application data (i.e. is not currently processing a handshake).
+	// handshakeStatus == 1 implies handshakeErr == nil.
 	// This field is only to be accessed with sync/atomic.
 	handshakeStatus uint32
 	// constant after handshake; protected by handshakeMutex
@@ -52,6 +53,10 @@ type Conn struct {
 	// verifiedChains contains the certificate chains that we built, as
 	// opposed to the ones presented by the server.
 	verifiedChains [][]*x509.Certificate
+	// verifiedDC contains the Delegated Credential sent by the peer (if advertised
+	// and correctly processed), which has been verified against the leaf certificate.
+	verifiedDC *DelegatedCredential //DelegatedCredentials
+
 	// serverName contains the server name indicated by the client, if any.
 	serverName string
 	// secureRenegotiation is true if the server echoed the secure
@@ -587,12 +592,14 @@ func (c *Conn) readChangeCipherSpec() error {
 
 // readRecordOrCCS reads one or more TLS records from the connection and
 // updates the record layer state. Some invariants:
-//   * c.in must be locked
-//   * c.input must be empty
+//   - c.in must be locked
+//   - c.input must be empty
+//
 // During the handshake one and only one of the following will happen:
 //   - c.hand grows
 //   - c.in.changeCipherSpec is called
 //   - an error is returned
+//
 // After the handshake one and only one of the following will happen:
 //   - c.hand grows
 //   - c.input is set
@@ -1403,6 +1410,13 @@ func (c *Conn) HandshakeContext(ctx context.Context) error {
 }
 
 func (c *Conn) handshakeContext(ctx context.Context) (ret error) {
+	// Fast sync/atomic-based exit if there is no handshake in flight and the
+	// last one succeeded without an error. Avoids the expensive context setup
+	// and mutex for most Read and Write calls.
+	if c.handshakeComplete() {
+		return nil
+	}
+
 	handshakeCtx, cancel := context.WithCancel(ctx)
 	// Note: defer this before starting the "interrupter" goroutine
 	// so that we can tell the difference between the input being canceled and
@@ -1461,6 +1475,9 @@ func (c *Conn) handshakeContext(ctx context.Context) (ret error) {
 	if c.handshakeErr == nil && !c.handshakeComplete() {
 		c.handshakeErr = errors.New("tls: internal error: handshake should have had a result")
 	}
+	if c.handshakeErr != nil && c.handshakeComplete() {
+		panic("tls: internal error: handshake returned an error but is marked successful")
+	}
 
 	return c.handshakeErr
 }
@@ -1483,6 +1500,9 @@ func (c *Conn) connectionStateLocked() ConnectionState {
 	state.CipherSuite = c.cipherSuite
 	state.PeerCertificates = c.peerCertificates
 	state.VerifiedChains = c.verifiedChains
+	if c.verifiedDC != nil {
+		state.VerifiedDC = true
+	}
 	state.SignedCertificateTimestamps = c.scts
 	state.OCSPResponse = c.ocspResponse
 	if !c.didResume && c.vers != VersionTLS13 {

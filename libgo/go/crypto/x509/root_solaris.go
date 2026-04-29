@@ -11,7 +11,8 @@ var certFiles = []string{
 	"/etc/ssl/cacert.pem",                // OmniOS
 }
 
-// Possible directories with certificate files; all will be read.
+// Possible directories with certificate files; stop after successfully
+// reading at least one file from a directory.
 var certDirectories = []string{
 	"/etc/certs/CA",
 }

@@ -817,6 +817,9 @@ func TestCloneNonFuncFields(t *testing.T) {
 			f.Set(reflect.ValueOf(true))
 		case "MinVersion", "MaxVersion":
 			f.Set(reflect.ValueOf(uint16(VersionTLS12)))
+		case "SupportDelegatedCredential": // DelegatedCredentials
+			f.Set(reflect.ValueOf(true)) // DelegatedCredentials
+
 		case "SessionTicketKey":
 			f.Set(reflect.ValueOf([32]byte{}))
 		case "CipherSuites":
@@ -1058,6 +1061,8 @@ func TestConnectionState(t *testing.T) {
 	rootCAs := x509.NewCertPool()
 	rootCAs.AddCert(issuer)
 
+	now := func() time.Time { return time.Unix(1476984729, 0) }
+
 	const alpnProtocol = "golang"
 	const serverName = "example.golang"
 	var scts = [][]byte{[]byte("dummy sct 1"), []byte("dummy sct 2")}
@@ -1073,7 +1078,7 @@ func TestConnectionState(t *testing.T) {
 		}
 		t.Run(name, func(t *testing.T) {
 			config := &Config{
-				Time:         testTime,
+				Time:         now,
 				Rand:         zeroSource{},
 				Certificates: make([]Certificate, 1),
 				MaxVersion:   v,

@@ -101,6 +101,7 @@ const (
 	extensionSignatureAlgorithmsCert uint16 = 50
 	extensionKeyShare                uint16 = 51
 	extensionRenegotiationInfo       uint16 = 0xff01
+	extensionDelegatedCredentials    uint16 = 34 // DelegatedCredentials
 )
 
 // TLS signaling cipher suite values
@@ -176,7 +177,7 @@ var directSigning crypto.Hash = 0
 // the code advertises as supported in a TLS 1.2+ ClientHello and in a TLS 1.2+
 // CertificateRequest. The two fields are merged to match with TLS 1.3.
 // Note that in TLS 1.2, the ECDSA algorithms are not constrained to P-256, etc.
-var supportedSignatureAlgorithms = []SignatureScheme{
+var defaultSupportedSignatureAlgorithms = []SignatureScheme{
 	PSSWithSHA256,
 	ECDSAWithP256AndSHA256,
 	Ed25519,
@@ -190,6 +191,19 @@ var supportedSignatureAlgorithms = []SignatureScheme{
 	PKCS1WithSHA1,
 	ECDSAWithSHA1,
 }
+
+// DelegatedCredentials
+// supportedSignatureAlgorithmsDC contains the signature and hash algorithms that
+// the code advertises as supported in a TLS 1.3 ClientHello and in a TLS 1.3
+// CertificateRequest. This excludes 'rsa_pss_rsae_' algorithms.
+var supportedSignatureAlgorithmsDC = []SignatureScheme{
+	ECDSAWithP256AndSHA256,
+	Ed25519,
+	ECDSAWithP384AndSHA384,
+	ECDSAWithP521AndSHA512,
+}
+
+// DelegatedCredentials end
 
 // helloRetryRequestRandom is set as the Random value of a ServerHello
 // to signal that the message is actually a HelloRetryRequest.
@@ -257,6 +271,11 @@ type ConnectionState struct {
 	// the server side, it's set if Config.ClientAuth is VerifyClientCertIfGiven
 	// (and the peer provided a certificate) or RequireAndVerifyClientCert.
 	VerifiedChains [][]*x509.Certificate
+
+	// VerifiedDC indicates that the Delegated Credential sent by the peer (if advertised
+	// and correctly processed), which has been verified against the leaf certificate,
+	// has been used.
+	VerifiedDC bool
 
 	// SignedCertificateTimestamps is a list of SCTs provided by the peer
 	// through the TLS handshake for the leaf certificate, if any.
@@ -420,6 +439,13 @@ type ClientHelloInfo struct {
 	// Algorithms Extension is being used (see RFC 5246, Section 7.4.1.4.1).
 	SignatureSchemes []SignatureScheme
 
+	// SignatureSchemesDC lists the signature schemes that the client
+	// is willing to verify when using Delegated Credentials.
+	// This is and can be different from SignatureSchemes. SignatureSchemesDC
+	// is set only if the DelegatedCredentials Extension is being used.
+	// If Delegated Credentials are supported, this list should not be nil.
+	SignatureSchemesDC []SignatureScheme // DelegatedCredentials
+
 	// SupportedProtos lists the application protocols supported by the client.
 	// SupportedProtos is set only if the Application-Layer Protocol
 	// Negotiation Extension is being used (see RFC 7301, Section 3.1).
@@ -433,6 +459,10 @@ type ClientHelloInfo struct {
 	// version advertised by the client, so values other than the greatest
 	// might be rejected if used.
 	SupportedVersions []uint16
+
+	// SupportDelegatedCredential is true if the client indicated willingness
+	// to negotiate the Delegated Credential extension.
+	SupportsDelegatedCredential bool // DelegatedCredentials
 
 	// Conn is the underlying net.Conn for the connection. Do not read
 	// from, or write to, this connection; that will cause the TLS
@@ -464,9 +494,20 @@ type CertificateRequestInfo struct {
 	// empty slice indicates that the server has no preference.
 	AcceptableCAs [][]byte
 
+	// SupportDelegatedCredential is true if the server indicated willingness
+	// to negotiate the Delegated Credential extension.
+	SupportsDelegatedCredential bool // DelegatedCredentials
+
 	// SignatureSchemes lists the signature schemes that the server is
 	// willing to verify.
 	SignatureSchemes []SignatureScheme
+
+	// SignatureSchemesDC lists the signature schemes that the server
+	// is willing to verify when using Delegated Credentials.
+	// This is and can be different from SignatureSchemes. SignatureSchemesDC
+	// is set only if the DelegatedCredentials Extension is being used.
+	// If Delegated Credentials are supported, this list should not be nil.
+	SignatureSchemesDC []SignatureScheme // DelegatedCredentials
 
 	// Version is the TLS version that was negotiated for this connection.
 	Version uint16
@@ -724,6 +765,13 @@ type Config struct {
 	// used for debugging.
 	KeyLogWriter io.Writer
 
+	// SupportDelegatedCredential is true if the client or server is willing
+	// to negotiate the delegated credential extension.
+	// This can only be used with TLS 1.3.
+	//
+	// See https://tools.ietf.org/html/draft-ietf-tls-subcerts.
+	SupportDelegatedCredential bool // DelegatedCredentials
+
 	// mutex protects sessionTicketKeys and autoSessionTicketKeys.
 	mutex sync.RWMutex
 	// sessionTicketKeys contains zero or more ticket keys. If set, it means the
@@ -813,6 +861,7 @@ func (c *Config) Clone() *Config {
 		DynamicRecordSizingDisabled: c.DynamicRecordSizingDisabled,
 		Renegotiation:               c.Renegotiation,
 		KeyLogWriter:                c.KeyLogWriter,
+		SupportDelegatedCredential:  c.SupportDelegatedCredential, // DelegatedCredentials
 		sessionTicketKeys:           c.sessionTicketKeys,
 		autoSessionTicketKeys:       c.autoSessionTicketKeys,
 	}
@@ -1346,6 +1395,16 @@ func (c *Config) writeKeyLog(label string, clientRandom, secret []byte) error {
 // and is only for debugging, so a global mutex saves space.
 var writerMutex sync.Mutex
 
+// A DelegatedCredentialPair contains a Delegated Credential and its
+// associated private key.
+type DelegatedCredentialPair struct { // DelegatedCredentials
+	// DC is the delegated credential.
+	DC *DelegatedCredential
+	// PrivateKey is the private key used to derive the public key of
+	// contained in DC. PrivateKey must implement crypto.Signer.
+	PrivateKey crypto.PrivateKey
+}
+
 // A Certificate is a chain of one or more certificates, leaf first.
 type Certificate struct {
 	Certificate [][]byte
@@ -1363,6 +1422,16 @@ type Certificate struct {
 	// SignedCertificateTimestamps contains an optional list of Signed
 	// Certificate Timestamps which will be served to clients that request it.
 	SignedCertificateTimestamps [][]byte
+	// DelegatedCredentials are a list of Delegated Credentials with their
+	// corresponding private keys, signed by the leaf certificate.
+	// If there are no delegated credentials, this field is nil.
+	DelegatedCredentials []DelegatedCredentialPair // DelegatedCredentials
+	// DelegatedCredential is the delegated credential to be used in the
+	// handshake.
+	// If there are no delegated credentials, this field is nil.
+	// NOTE: Do not fill this field, as it will be filled depending on
+	// the provided list of delegated credentials.
+	DelegatedCredential []byte // DelegatedCredentials
 	// Leaf is the parsed form of the leaf certificate, which may be initialized
 	// using x509.ParseCertificate to reduce per-handshake processing. If nil,
 	// the leaf certificate will be parsed as needed.
