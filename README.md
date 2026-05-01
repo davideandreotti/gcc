@@ -20,7 +20,7 @@ This repository should be built using GCC's standard out-of-tree build process. 
 ```bash
 mkdir -p ../gcc-rebuild
 cd ../gcc-rebuild
-../gcc/configure [your GCC configure options]
+../gcc/configure --prefix=<install-path> --enable-languages=c,c++,go [--disable-multilib] [+ other options]
 make -j$(nproc)
 ```
 If desired, install with: 
