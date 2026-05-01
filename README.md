@@ -22,9 +22,6 @@ mkdir -p ../gcc-rebuild
 cd ../gcc-rebuild
 ../gcc/configure --prefix=<install-path> --enable-languages=c,c++,go [--disable-multilib] [+ other options]
 make -j$(nproc)
-```
-If desired, install with: 
-```bash
 make install
 ```
 For authoritative build and installation details see:
